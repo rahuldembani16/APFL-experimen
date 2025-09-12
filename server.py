@@ -329,7 +329,7 @@ if __name__ == "__main__":
                                                                                                 args['cfraction'])))
 # 建立csv文件存储loss和acc
 df = pd.DataFrame(columns=['time', 'round', 'loss', 'accuracy'])  # 列名
-log_filename = "./log/{}_{}_{}_pr{}.csv".format(args['algorithm'], args['dataset'], args['attack'], args['pr'])
+log_filename = "./log/{}_{}_{}_pr{}_E{}_ncomm{}.csv".format(args['algorithm'], args['dataset'], args['attack'], args['pr'], args['epoch'], args['num_comm'])
 df.to_csv(log_filename, index=False)  # 路径可以根据需要更改
 for i in range(args['num_comm']):
     time = "%s" % datetime.now()
