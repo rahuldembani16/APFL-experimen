@@ -245,12 +245,22 @@ if __name__ == "__main__":
             # 用localParameters_Gaussian(list类型)记录各个客户端的加噪本地参数
             localParameters_Gaussian.append(
                 deepcopy(local_parameters_Gaussian))  # 加噪的本地模型参数
+            
+            # 为FLAvg算法累加参数
+            if args['algorithm'] == 'FLAvg':
+                if sum_parameters is None:
+                    sum_parameters = {}
+                    for var in local_parameters:
+                        sum_parameters[var] = local_parameters[var]  # 直接赋值CKKSVector
+                else:
+                    for var in local_parameters:
+                        sum_parameters[var] = sum_parameters[var] + local_parameters[var]  # CKKSVector加法
 
         if args['algorithm'] == 'FLAvg':
-            # 取平均值，得到本次通信中Server得到的更新后的模型参数
+            # 对所有客户端的参数进行平均
             for var in global_parameters:
-                global_parameters[var] = (sum_parameters[var] / num_in_comm)
-            print("全局模型范数", l2(global_parameters))
+                global_parameters[var] = sum_parameters[var] * (1.0 / num_in_comm)  # 使用标量乘法代替除法
+            print("全局模型参数聚合完成 (加密状态，无法计算范数)")
         elif args['algorithm'] == 'APFL':
             # 求加入高斯噪声后的平均模型参数：
             for i in range(len(localParameters_Gaussian)):  # 求当前轮次加噪后的本地模型参数之和
