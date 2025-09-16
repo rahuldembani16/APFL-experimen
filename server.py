@@ -45,7 +45,7 @@ parser.add_argument('-ncomm', '--num_comm', type=int, default=100, help='number 
 parser.add_argument('-sp', '--save_path', type=str, default='./checkpoints', help='the saving path of checkpoints')
 
 parser.add_argument('-iid', '--IID', type=int, default=1, help='the way to allocate data to clients')
-parser.add_argument('-Algorithm', '--algorithm', type=str, default='APFL', help='FLAvg or APFL')
+parser.add_argument('-Algorithm', '--algorithm', type=str, default='APFL', help='FLAvg, APFL, Krum, Median, or TrimMean')
 parser.add_argument('-poisoning ratio', '--pr', type=float, default=0, help='poisoning ratio')
 parser.add_argument('-poisoning attack type', '--attack', type=str, default="NA", help='label flipping attack:LFA'
                                                                                        'model poisoning attacks:MPA'
@@ -101,6 +101,112 @@ def w_sum(list):
     suoyin = np.argsort(-cosine2)
     list2 = np.sort(list)
     return suoyin, list2
+
+
+def krum_aggregation(local_parameters, num_malicious=1):
+    """
+    Krum aggregation method for Byzantine-robust federated learning
+    """
+    n = len(local_parameters)
+    scores = []
+    
+    # Calculate scores for each client
+    for i in range(n):
+        distances = []
+        for j in range(n):
+            if i != j:
+                # Calculate Euclidean distance between models
+                dist = 0
+                for var in local_parameters[i]:
+                    if hasattr(local_parameters[i][var], 'decrypt'):
+                        # For encrypted parameters, we need to decrypt first
+                        param_i = local_parameters[i][var].decrypt(secret_key)
+                        param_j = local_parameters[j][var].decrypt(secret_key)
+                        dist += np.sum((param_i - param_j) ** 2)
+                    else:
+                        # For plaintext parameters
+                        param_i = local_parameters[i][var].cpu().numpy()
+                        param_j = local_parameters[j][var].cpu().numpy()
+                        dist += np.sum((param_i - param_j) ** 2)
+                distances.append(dist)
+        
+        # Sort distances and take the smallest n - num_malicious - 2
+        distances.sort()
+        score = sum(distances[:n - num_malicious - 2])
+        scores.append(score)
+    
+    # Select the client with the smallest score
+    selected_idx = np.argmin(scores)
+    return local_parameters[selected_idx]
+
+
+def median_aggregation(local_parameters):
+    """
+    Median aggregation method - take median of each parameter across clients
+    """
+    aggregated_params = {}
+    
+    for var in local_parameters[0]:
+        # Collect all parameters for this variable
+        all_params = []
+        for client_params in local_parameters:
+            if hasattr(client_params[var], 'decrypt'):
+                # Decrypt encrypted parameters
+                param = client_params[var].decrypt(secret_key)
+                all_params.append(param)
+            else:
+                param = client_params[var].cpu().numpy()
+                all_params.append(param)
+        
+        # Stack parameters and take median along client dimension
+        all_params = np.stack(all_params, axis=0)
+        median_params = np.median(all_params, axis=0)
+        
+        # Convert back to tensor
+        aggregated_params[var] = torch.tensor(median_params, dtype=torch.float32, device=dev)
+    
+    return aggregated_params
+
+
+def trim_mean_aggregation(local_parameters, trim_ratio=0.1):
+    """
+    Trimmed mean aggregation method - remove outliers and take mean
+    """
+    aggregated_params = {}
+    
+    for var in local_parameters[0]:
+        # Collect all parameters for this variable
+        all_params = []
+        for client_params in local_parameters:
+            if hasattr(client_params[var], 'decrypt'):
+                # Decrypt encrypted parameters
+                param = client_params[var].decrypt(secret_key)
+                all_params.append(param)
+            else:
+                param = client_params[var].cpu().numpy()
+                all_params.append(param)
+        
+        # Stack parameters
+        all_params = np.stack(all_params, axis=0)
+        
+        # Trim outliers
+        n_clients = all_params.shape[0]
+        trim_count = int(n_clients * trim_ratio)
+        
+        # For each parameter element, sort and trim
+        trimmed_mean = np.zeros_like(all_params[0])
+        
+        # Iterate over each parameter element
+        for idx in np.ndindex(all_params.shape[1:]):
+            values = all_params[(slice(None),) + idx]
+            sorted_values = np.sort(values)
+            trimmed_values = sorted_values[trim_count:-trim_count] if trim_count > 0 else sorted_values
+            trimmed_mean[idx] = np.mean(trimmed_values)
+        
+        # Convert back to tensor
+        aggregated_params[var] = torch.tensor(trimmed_mean, dtype=torch.float32, device=dev)
+    
+    return aggregated_params
 
 
 def MPA(parameter):
@@ -208,9 +314,7 @@ if __name__ == "__main__":
         global_parameters_Gaussian = dict.fromkeys(net.state_dict(), 0)  # 定义加噪后的全局模型参数
         print("communicate round {}".format(i + 1))
         # 选取全部的用户进行训练
-        if args['algorithm'] == 'FLAvg':
-            order = random.sample(range(0, int(args['num_of_clients'])), args['num_of_clients'])
-        elif args['algorithm'] == 'APFL':
+        if args['algorithm'] in ['FLAvg', 'APFL', 'Krum', 'Median', 'TrimMean']:
             order = random.sample(range(0, int(args['num_of_clients'])), args['num_of_clients'])
         clients_in_comm = ['client{}'.format(i) for i in order]
         print("随机挑选的客户端:", clients_in_comm)
@@ -231,7 +335,7 @@ if __name__ == "__main__":
                                                                                                     context, secret_key)
             # test_img(client, local_parameters_Gaussian, testDataLoader)
             # 如果是MPA投毒用户，则参数置反
-            if clients_in_comm.index(client) < 10 and args['algorithm'] == 'FLAvg' and args['attack'] == 'MPA':
+            if clients_in_comm.index(client) < 10 and args['algorithm'] in ['FLAvg', 'Krum', 'Median', 'TrimMean'] and args['attack'] == 'MPA':
                 for key in local_parameters:
                     local_parameters[key] = -local_parameters[key]
             elif clients_in_comm.index(client) < 10 and args['algorithm'] == 'APFL' and args['attack'] == 'MPA':
@@ -301,6 +405,65 @@ if __name__ == "__main__":
                     for var in global_parameters:
                         global_parameters[var] += localParameters[index[i]][var] * locals()[
                             "{}_cos".format(clients_in_comm[index[i]])]
+        elif args['algorithm'] == 'Krum':
+            # Krum aggregation
+            print("使用Krum聚合方法")
+            # First decrypt all parameters for Krum calculation
+            localParameters_dec = []
+            for client_params in localParameters:
+                decrypted_params = dec(client_params, secret_key)
+                for var in decrypted_params:
+                    decrypted_params[var] = np.array(decrypted_params[var]).reshape(net.state_dict()[var].shape)
+                    decrypted_params[var] = torch.tensor(decrypted_params[var], dtype=torch.float32, device='cpu')
+                localParameters_dec.append(decrypted_params)
+            
+            # Apply Krum aggregation
+            krum_result = krum_aggregation(localParameters_dec)
+            
+            # Convert back to encrypted format
+            for var in global_parameters:
+                param_flat = krum_result[var].cpu().numpy().flatten()
+                global_parameters[var] = ts.ckks_vector(context, param_flat)
+            
+        elif args['algorithm'] == 'Median':
+            # Median aggregation
+            print("使用Median聚合方法")
+            # First decrypt all parameters for Median calculation
+            localParameters_dec = []
+            for client_params in localParameters:
+                decrypted_params = dec(client_params, secret_key)
+                for var in decrypted_params:
+                    decrypted_params[var] = np.array(decrypted_params[var]).reshape(net.state_dict()[var].shape)
+                    decrypted_params[var] = torch.tensor(decrypted_params[var], dtype=torch.float32, device='cpu')
+                localParameters_dec.append(decrypted_params)
+            
+            # Apply Median aggregation
+            median_result = median_aggregation(localParameters_dec)
+            
+            # Convert back to encrypted format
+            for var in global_parameters:
+                param_flat = median_result[var].cpu().numpy().flatten()
+                global_parameters[var] = ts.ckks_vector(context, param_flat)
+            
+        elif args['algorithm'] == 'TrimMean':
+            # Trimmed Mean aggregation
+            print("使用TrimMean聚合方法")
+            # First decrypt all parameters for TrimMean calculation
+            localParameters_dec = []
+            for client_params in localParameters:
+                decrypted_params = dec(client_params, secret_key)
+                for var in decrypted_params:
+                    decrypted_params[var] = np.array(decrypted_params[var]).reshape(net.state_dict()[var].shape)
+                    decrypted_params[var] = torch.tensor(decrypted_params[var], dtype=torch.float32, device='cpu')
+                localParameters_dec.append(decrypted_params)
+            
+            # Apply TrimMean aggregation
+            trimmean_result = trim_mean_aggregation(localParameters_dec)
+            
+            # Convert back to encrypted format
+            for var in global_parameters:
+                param_flat = trimmean_result[var].cpu().numpy().flatten()
+                global_parameters[var] = ts.ckks_vector(context, param_flat)
 
         #  解密全局模型并测试模型精度
         global_parameters_dec = dec(global_parameters, secret_key)
