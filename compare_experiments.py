@@ -7,7 +7,7 @@ from matplotlib.patches import Rectangle
 import matplotlib.patches as mpatches
 
 LOG_DIR = "./log"
-ALGORITHMS = ["APFL", "FLAvg", "Krum", "Median", "TrimMean"]
+ALGORITHMS = ["JADE-FL-(our)", "FLAvg", "Krum", "Median", "TrimMean"]
 ATTACKS = ["NA", "LFA", "MPA"]
 DATASET = "plantvillage"
 POISONING_RATIOS = {"NA": "0", "LFA": "0.3", "MPA": "0.3"}
